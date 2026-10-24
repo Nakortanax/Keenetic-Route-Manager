@@ -310,21 +310,39 @@ def delete_command(route: Route) -> str:
     return f"no ip route {_cli_destination(route.network)} {route.interface}"
 
 
-def ordered_edit_commands(adds: list[Route], removes: list[Route]) -> list[str]:
-    """Preserve existing connectivity while switching a host to another interface.
+def ordered_edit_operations(adds: list[Route], removes: list[Route]) -> list[tuple[str, str]]:
+    """Build (CLI, undo CLI) pairs without transient duplicate exact prefixes.
 
-    Moves between different interface IDs always add the replacement BEFORE
-    deleting the previous /32. Same-key property edits cannot be done as a
-    parallel route: remove old then add the replacement (backups still needed).
+    Keenetic may fail with Netlink EEXIST if two routes for the same host
+    coexist across interfaces. For moves, remove the old host route FIRST.
+    Other broader prefixes remain untouched. Undo is only best effort and
+    needs subsequent router-state verification.
     """
-    old_keys = {r.key for r in removes}
-    common = old_keys & {r.key for r in adds}
-    return (
-        [add_command(r) for r in adds if r.key not in common]
-        + [delete_command(r) for r in removes if r.key in common]
-        + [add_command(r) for r in adds if r.key in common]
-        + [delete_command(r) for r in removes if r.key not in common]
-    )
+    if len({r.key for r in adds}) != len(adds) or len({r.key for r in removes}) != len(removes):
+        raise ValueError("Повторяющиеся команды изменения маршрутов")
+    shared = {r.cidr for r in adds} & {r.cidr for r in removes}
+    paired_removals = [r for r in removes if r.cidr in shared]
+    paired_additions = [r for r in adds if r.cidr in shared]
+    stand_alone_additions = [r for r in adds if r.cidr not in shared]
+    stand_alone_removals = [r for r in removes if r.cidr not in shared]
+    steps = []
+    for prefix in dict.fromkeys(r.cidr for r in paired_removals):
+        for r in paired_removals:
+            if r.cidr == prefix:
+                steps.append((delete_command(r), add_command(r)))
+        for r in paired_additions:
+            if r.cidr == prefix:
+                steps.append((add_command(r), delete_command(r)))
+    for r in stand_alone_additions:
+        steps.append((add_command(r), delete_command(r)))
+    for r in stand_alone_removals:
+        steps.append((delete_command(r), add_command(r)))
+    return steps
+
+
+def ordered_edit_commands(adds: list[Route], removes: list[Route]) -> list[str]:
+    """Preview exactly the operations used by the executor."""
+    return [command for command, _ in ordered_edit_operations(adds, removes)]
 
 
 def coverage(route: Route, existing: list[Route]) -> tuple[bool, list[Route]]:
