@@ -31,12 +31,12 @@ class ActualKeeneticInterfaces(unittest.TestCase):
         self.assertNotIn('AccessPoint', values)
         self.assertEqual(default_interface(self.interfaces), 'Wireguard2')
 
-    def test_switch_uses_add_first_and_remove_after(self):
+    def test_switch_removes_before_add_to_avoid_netlink_conflict(self):
         old = Route(IPv4Network('188.114.96.1/32'), 'Wireguard2', True)
         new = Route(IPv4Network('188.114.96.1/32'), 'ISP', True)
         self.assertEqual(ordered_edit_commands([new], [old]), [
-            'ip route 188.114.96.1 ISP auto',
             'no ip route 188.114.96.1 Wireguard2',
+            'ip route 188.114.96.1 ISP auto',
         ])
 
     def test_edit_same_interface_preserves_replacement_order(self):
