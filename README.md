@@ -1,6 +1,6 @@
 # Keenetic Route Manager
 
-**Windows IPv4 static route manager for KeeneticOS** · version **0.2.2** · PySide6 / Qt.
+**Windows IPv4 static route manager for KeeneticOS** · version **0.2.3** · PySide6 / Qt.
 
 > Third-party community utility, not affiliated with or endorsed by Keenetic Ltd. The visual style is inspired by router control panels; no Keenetic logos, proprietary fonts, or firmware assets are bundled.
 
@@ -82,3 +82,9 @@ IP-адреса и маршруты, поэтому файлы журнала м
 
 Журнал **не заменяет** резервную копию маршрутов: перед записью приложение делает
 отдельный локальный бэкап списка маршрутов и повторно проверяет результат на роутере.
+
+## Исправление переключения сайтов (0.2.3)
+
+На KeeneticOS 5.2 Beta 1 возможна ошибка `Io::Netlink ... file exists`, если попытаться добавить второй `/32` маршрут к одному IP на другой интерфейс до удаления старого. Версия 0.2.3 сначала удаляет исходный точный маршрут, затем добавляет замену. При ошибке она пытается откатить выполненные команды и проверяет состояние; `system configuration save` не вызывается. Двойные конфликтующие `/32` маршруты автоматически не исправляются: требуется ручная проверка.
+
+После ошибки в 0.2.2 обязательно прочитай текущие маршруты `188.114.96.3/32` и `188.114.97.3/32`, прежде чем менять их снова.
