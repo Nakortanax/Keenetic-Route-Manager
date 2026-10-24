@@ -1,0 +1,38 @@
+Interface, name = "ISP"
+                id: GigabitEthernet1
+              type: GigabitEthernet
+       description: Ethernet
+              link: up
+           address: 192.0.2.13
+              port, name = 0:
+                     id: GigabitEthernet1/0
+                   type: Port
+
+Interface, name = "0"
+                id: GigabitEthernet1/0
+              type: Port
+              link: up
+
+Interface, name = "Wireguard0"
+                id: Wireguard0
+              type: Wireguard
+       description: amnezia_for_awg_1
+              link: down
+
+Interface, name = "Wireguard2"
+                id: Wireguard2
+              type: Wireguard
+       description: amnezia_for_awg
+              link: up
+
+Interface, name = "AccessPoint"
+                id: WifiMaster0/AccessPoint0
+              type: AccessPoint
+       description: Wi-Fi access point
+              link: up
+
+Interface, name = "Home"
+                id: Bridge0
+              type: Bridge
+       description: Primary
+              link: up
