@@ -21,6 +21,7 @@ SECRET = re.compile(
 )
 INLINE = re.compile(r"(?i)\b(password|token|secret|key)\s*[:=]\s*\S+")
 ROUTE = re.compile(r"^\s*ip route(?:\s|$)", re.I)
+ANSI_CONTROL = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 SAFE_INTERFACE = re.compile(
     r"^\s*(?:Interface, name|id|interface-name|description|type|link|connected|state|status)\s*[:=]", re.I
 )
@@ -29,7 +30,8 @@ SAFE_INTERFACE = re.compile(
 def redact(text: str) -> str:
     """Remove entire sensitive lines rather than risk partial key exposure."""
     cleaned = []
-    for line in str(text).splitlines():
+    text = ANSI_CONTROL.sub("", str(text))
+    for line in text.splitlines():
         if SECRET.search(line):
             cleaned.append('[СКРЫТО: конфиденциальные данные]')
         else:
