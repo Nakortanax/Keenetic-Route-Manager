@@ -340,6 +340,95 @@ def ordered_edit_operations(adds: list[Route], removes: list[Route]) -> list[tup
     return steps
 
 
+
+def prepare_safe_edit(adds: list[Route], removes: list[Route], existing: list[Route]
+                      ) -> tuple[list[Route], list[Route], list[str]]:
+    """Expand an explicitly requested host-route cleanup to a safe, reviewable plan.
+
+    Keenetic 5.2 can retain two configured /32 routes to different interfaces
+    after an add-first failure. The kernel may then reject deletion of the
+    old route with EEXIST. To reconcile, remove the ISP route first (the
+    specific failing case observed on Racer), remove remaining conflicting
+    exact host routes, and put back ONLY the chosen target interface.
+
+    Never auto-reconcile non-/32, disabled, gateway/reject or ambiguous routes.
+    An untouched route belonging to a different IP is never altered.
+    """
+    target_prefixes = {r.cidr for r in adds + removes}
+    effective_adds = list(adds)
+    effective_removes = list(removes)
+    notes = []
+    for cidr in sorted(target_prefixes):
+        active = [r for r in existing if r.cidr == cidr and not r.disabled]
+        interfaces = {r.interface or r.gateway for r in active}
+        if len(active) < 2:
+            continue
+        if (len(interfaces) == 1 or len(active) != len(interfaces) or
+                any(r.network.prefixlen != 32 or not can_edit(r) for r in active) or
+                any(r.cidr == cidr and r.disabled for r in existing)):
+            raise ValueError(f'{cidr}: неоднозначные, отключённые или защищённые маршруты. '
+                             'Автоматическое восстановление невозможно')
+        removed = [r for r in removes if r.cidr == cidr]
+        requested_adds = [r for r in adds if r.cidr == cidr]
+        removed_keys = {r.key for r in removed}
+        survivors = [r for r in active if r.key not in removed_keys] + requested_adds
+        # A caller must explicitly choose ONE resulting interface and request
+        # deletion of every other active competing route. Never infer a target.
+        if (len(survivors) != 1 or not can_edit(survivors[0]) or
+                survivors[0].network.prefixlen != 32 or
+                {r.key for r in survivors} & {r.key for r in removed}):
+            raise ValueError(f'{cidr}: невозможно однозначно определить маршрут, '
+                             'который пользователь хочет оставить')
+        chosen = survivors[0]
+        if chosen in active:
+            # The preferred route already exists. Remove and recreate it,
+            # ensuring stale duplicate state is fully cleared first.
+            if chosen not in effective_removes:
+                effective_removes.append(chosen)
+            if chosen not in effective_adds:
+                effective_adds.append(chosen)
+        notes.append(f'{cidr}: очистка конфликта {len(active)} маршрутов; '
+                     f'после операции останется {chosen.interface}')
+
+    # For the known ISP/Wireguard2 conflict remove ISP FIRST. Other routes
+    # preserve input order. More than one unrelated /32 is still verified as
+    # a single proposed transaction prior to saving.
+    conflict_prefixes = {line.split(':')[0] for line in notes}
+    ordered_removes = []
+    for cidr in sorted(conflict_prefixes):
+        group = [r for r in effective_removes if r.cidr == cidr]
+        ordered_removes.extend(sorted(group, key=lambda r: (r.interface != 'ISP', r.interface)))
+    ordered_removes += [r for r in effective_removes if r.cidr not in conflict_prefixes]
+    # Replacements are naturally paired by ordered_edit_operations. To avoid
+    # its prefix interleaving, conflict groups with >2 must be rejected.
+    if len({r.key for r in ordered_removes}) != len(ordered_removes):
+        raise ValueError('Дублирование удалений в плане маршрутизации')
+    if len({r.key for r in effective_adds}) != len(effective_adds):
+        raise ValueError('Дублирование добавлений в плане маршрутизации')
+    return effective_adds, ordered_removes, notes
+
+
+def prepare_safe_operations(adds: list[Route], removes: list[Route], existing: list[Route]
+                            ) -> tuple[list[tuple[str, str]], list[Route], list[Route], list[str]]:
+    eff_adds, eff_removes, notes = prepare_safe_edit(adds, removes, existing)
+    # For conflicting prefixes, all removals MUST happen before any add.
+    # ordered_edit_operations pairs add/removes by prefix, which can insert
+    # too early when a prefix has two stale routes; build that piece explicitly.
+    conflict = {line.split(':')[0] for line in notes}
+    operations = []
+    for cidr in sorted(conflict):
+        for r in eff_removes:
+            if r.cidr == cidr:
+                operations.append((delete_command(r), add_command(r)))
+        for r in eff_adds:
+            if r.cidr == cidr:
+                operations.append((add_command(r), delete_command(r)))
+    normal_adds = [r for r in eff_adds if r.cidr not in conflict]
+    normal_removes = [r for r in eff_removes if r.cidr not in conflict]
+    operations.extend(ordered_edit_operations(normal_adds, normal_removes))
+    return operations, eff_adds, eff_removes, notes
+
+
 def ordered_edit_commands(adds: list[Route], removes: list[Route]) -> list[str]:
     """Preview exactly the operations used by the executor."""
     return [command for command, _ in ordered_edit_operations(adds, removes)]
