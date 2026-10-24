@@ -23,11 +23,12 @@ class TransportError(RuntimeError):
 
 class TelnetSession:
     def __init__(self, host: str, port: int, login: str, password: str, timeout: float = 65,
-                 progress: Callable[[str], None] | None = None):
+                 progress: Callable[[str], None] | None = None, journal=None):
         self.host, self.port = host, port
         self.login, self.password = login, password
         self.timeout = timeout
         self.progress = progress
+        self.journal = journal
         self.sock: socket.socket | None = None
         self._state = 0
         self._iac_cmd = 0
@@ -38,8 +39,14 @@ class TelnetSession:
         try:
             self.sock = socket.create_connection((self.host, self.port), timeout=8)
             self.sock.settimeout(0.5)
+            if self.journal:
+                self.journal.record('telnet', f'Подключение к {self.host}:{self.port}', status='start')
             self._login()
-        except Exception:
+            if self.journal:
+                self.journal.record('telnet', 'Авторизация подтверждена (пароль не записывается)', status='ok')
+        except Exception as exc:
+            if self.journal:
+                self.journal.record('telnet', f'Не удалось открыть сессию: {type(exc).__name__}: {exc}', status='error')
             self.__exit__(None, None, None)
             raise
         return self
@@ -165,9 +172,21 @@ class TelnetSession:
                 inactivity: float | None = None) -> str:
         if not re.fullmatch(r"[a-zA-Z0-9 /._\-]+", command):
             raise TransportError("Команда содержит недопустимые символы")
-        self._send(command)
-        reply, _ = self._read_until([PROMPT], timeout=timeout, inactivity=inactivity,
-                                    context=command)
-        if not command.startswith("show ") and FAIL.search(reply):
-            raise TransportError("Keenetic сообщил об ошибке: " + FAIL.search(reply).group(0)[:250])
-        return reply
+        if self.journal:
+            self.journal.record('telnet-command', 'Отправлена команда', command=command, status='start')
+        try:
+            self._send(command)
+            reply, _ = self._read_until([PROMPT], timeout=timeout, inactivity=inactivity,
+                                        context=command)
+            failed = not command.startswith('show ') and FAIL.search(reply)
+            if self.journal:
+                self.journal.record('telnet-reply', 'Ответ Keenetic' if not failed else 'Ошибка Keenetic',
+                                    command=command, response=reply,
+                                    status='error' if failed else 'ok')
+            if failed:
+                raise TransportError('Keenetic сообщил об ошибке: ' + failed.group(0)[:250])
+            return reply
+        except Exception as exc:
+            if self.journal and not (isinstance(exc, TransportError) and str(exc).startswith('Keenetic сообщил')):
+                self.journal.record('telnet-error', f'{type(exc).__name__}: {exc}', command=command, status='error')
+            raise

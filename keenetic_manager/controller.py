@@ -43,15 +43,16 @@ def resolve_site(domain: str) -> list[str]:
 
 
 class RouterClient:
-    def __init__(self, host: str, port: int, login: str, password: str):
+    def __init__(self, host: str, port: int, login: str, password: str, journal=None):
         self.host = check_lan_host(host)
         self.port = int(port)
         if not 1 <= self.port <= 65535 or not login or not password:
             raise ValueError('Проверь порт, логин и пароль Keenetic')
         self.login, self.password = login, password
+        self.journal = journal
 
     def _session(self, progress=None):
-        return TelnetSession(self.host, self.port, self.login, self.password, progress=progress)
+        return TelnetSession(self.host, self.port, self.login, self.password, progress=progress, journal=self.journal)
 
     def ping(self, progress=None):
         with self._session(progress) as session:
@@ -94,6 +95,8 @@ class RouterClient:
             root.mkdir(parents=True, exist_ok=True)
             backup = root / ('routes-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.json')
             save_export(backup, fresh, 'json')
+            if self.journal:
+                self.journal.record('backup', f'Сохранены {len(fresh)} маршрутов перед изменениями: {backup}', status='ok')
             for cmd in commands:
                 session.command(cmd, timeout=35)
             actual, ifaces, unknown = self._read(session)
@@ -108,4 +111,6 @@ class RouterClient:
             if not {(r.cidr,r.interface,r.auto,r.metric,r.disabled) for r in adds}.issubset(specs):
                 raise TransportError(f'Параметры маршрутов не совпали; не сохранено. Бэкап: {backup}')
             session.command('system configuration save', timeout=45)
+            if self.journal:
+                self.journal.record('router', f'Изменения подтверждены повторным чтением: добавлено {len(adds)}, удалено {len(removes)}. Сохранено.', status='ok')
         return actual, ifaces, backup

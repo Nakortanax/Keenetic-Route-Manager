@@ -1,4 +1,4 @@
-"""Keenetic Route Manager v0.2.1 — Qt UI over the proven CLI routing core."""
+"""Keenetic Route Manager v0.2.2 — Qt UI over the proven CLI routing core."""
 from __future__ import annotations
 
 import csv
@@ -9,8 +9,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QObject, Signal, QRunnable, QThreadPool, QAbstractTableModel, QSortFilterProxyModel, QModelIndex
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QObject, Signal, QRunnable, QThreadPool, QAbstractTableModel, QSortFilterProxyModel, QModelIndex, QTimer, QUrl
+from PySide6.QtGui import QColor, QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QStackedWidget, QPushButton, QLabel, QLineEdit, QSpinBox, QComboBox,
@@ -25,8 +25,9 @@ from keenetic_manager.site_routes import site_ip_status, plan_site_interface_cha
 from keenetic_manager.interface_choices import build_interface_choices, default_interface
 from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_network
 from keenetic_manager.controller import RouterClient, resolve_site
+from keenetic_manager.activity_log import ActivityJournal
 
-VERSION = '0.2.1'
+VERSION = '0.2.2'
 
 THEME = '''
 /* Do not paint every QWidget: that creates dark rectangles behind text labels. */
@@ -72,6 +73,70 @@ QProgressBar { border:0; border-radius:3px; height:4px; background:#2b4055; }
 QProgressBar::chunk { border-radius:3px; background:#36bdf1; }
 QToolTip { background:#293d50; color:#fff; border:1px solid #5d7487; }
 '''
+
+
+
+# Tooltips are attached locally to actual Qt widgets, including dynamically
+# created dialogs. Nothing is written to router by hovering over a control.
+HELP = {
+    'Проверить связь': 'Проверить соединение и авторизацию Telnet. Маршруты не меняются.',
+    '↻  Обновить маршруты': 'Прочитать статические маршруты и интерфейсы Keenetic заново. Только чтение.',
+    'Проверить Telnet': 'Отправить безопасную команду show version и проверить ответ Keenetic.',
+    'Скопировать диагностику': 'Скопировать сводку: количество маршрутов, интерфейсов и ошибок разбора.',
+    'Обновить журнал': 'Показать последние события Telnet и действия программы из локального файла.',
+    'Скопировать журнал': 'Скопировать отображаемую часть журнала с замаскированными секретами.',
+    'Открыть папку журнала': 'Открыть локальные файлы журнала. Полный running-config и пароли не сохраняются.',
+    'Сохранить журнал как…': 'Экспортировать текущий очищенный журнал в выбранный текстовый файл.',
+    '+ Маршрут': 'Добавить отдельную сеть IPv4 с указанием интерфейса; изменения подтверждаются перед записью.',
+    '✎ Изменить': 'Изменить выбранный маршрут: сначала создаётся новый, затем удаляется старый.',
+    '− Удалить': 'Удалить только выбранные маршруты, после предварительного подтверждения.',
+    '◉ Найти сайт': 'Определить IPv4 домена и показать маршруты с возможностью сменить интерфейс.',
+    '◉  Найти IPv4 и существующие маршруты': 'Сравнить DNS-адреса сайта с текущими маршрутами Keenetic.',
+    '☰ Подписать': 'Добавить локальную подпись сайта к IP. На Keenetic не записывается.',
+    '⌕ Определить IP': 'Проверить PTR и RDAP. Владелец IP не обязательно является владельцем сайта.',
+    'Экспортировать': 'Экспортировать маршруты Keenetic; CSV/JSON сохраняют локальные подписи.',
+    'Открыть файл': 'Просмотреть файл маршрутов перед безопасным импортом в Keenetic.',
+    'Просмотреть изменения': 'Показать точный список CLI-команд до их подтверждения.',
+    'Добавить': 'Подтвердить ввод IPv4-маршрута. Запись в Keenetic потребует отдельного подтверждения.',
+}
+
+
+def attach_tooltips(widget):
+    for child in [widget] + widget.findChildren(QWidget):
+        if child.toolTip():
+            continue
+        tip = ''
+        if isinstance(child, QPushButton):
+            tip = HELP.get(child.text(), '')
+            if not tip and child.objectName() == 'nav':
+                tip = 'Открыть раздел «' + child.text().strip() + '». Без изменения настроек Keenetic.'
+        elif isinstance(child, QLineEdit):
+            if child.echoMode() == QLineEdit.Password:
+                tip = 'Пароль хранится только в памяти процесса и никогда не пишется в журнал.'
+            elif child.placeholderText():
+                tip = child.placeholderText()
+            elif child is getattr(widget, 'ip', None):
+                tip = 'Частный IPv4-адрес Keenetic в твоей локальной сети.'
+            elif child is getattr(widget, 'user', None):
+                tip = 'Логин администратора Keenetic. Пароль отдельно.'
+        elif isinstance(child, QLabel):
+            descriptions = {'РОУТЕР':'IP-адрес Keenetic в LAN.', 'ПОРТ':'Порт Telnet роутера.',
+                            'ЛОГИН':'Учётная запись Keenetic.', 'ПАРОЛЬ':'Не сохраняется в файлы или журнал.',
+                            'ИНТЕРФЕЙС':'Показать маршруты одного интерфейса.',
+                            'ДОМЕН САЙТА':'Домен будет преобразован в DNS IPv4 для проверки маршрутов.'}
+            tip = descriptions.get(child.text(), '')
+        elif isinstance(child, QComboBox):
+            tip = 'Выбери один из интерфейсов, обнаруженных на Keenetic; физические порты не подходят.'
+        elif isinstance(child, QTableView):
+            tip = 'Маршруты Keenetic. Выдели строку для просмотра, изменения или удаления.'
+        elif isinstance(child, QTableWidget):
+            tip = 'IPv4-адреса сайта, соответствующие им маршруты и текущие интерфейсы.'
+        elif isinstance(child, QSpinBox):
+            tip = 'TCP-порт интерфейса Telnet (обычно 23). Используй только доверенную локальную сеть.'
+        elif isinstance(child, QCheckBox):
+            tip = 'Изменяет указанный параметр будущего маршрута, но не всю конфигурацию роутера.'
+        if tip:
+            child.setToolTip(tip)
 
 
 def info(title, message, parent=None):
@@ -247,15 +312,22 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle(f'Keenetic Route Manager {VERSION}');self.resize(1460,880);self.setMinimumSize(1050,650)
         self.threadpool=QThreadPool.globalInstance();self.workers=[]
+        self.journal=ActivityJournal()
+        self.journal.record('application', f'Запуск Keenetic Route Manager {VERSION}', status='start')
         self.routes=[];self.interfaces={};self.bad_lines=[];self.loaded=False;self.metadata=None;self.busy=False
         self.model=RouteModel();self.proxy=RouteFilter();self.proxy.setSourceModel(self.model)
         self._build_ui();self._show_page(0)
+        attach_tooltips(self)
+        self.log_timer=QTimer(self)
+        self.log_timer.setInterval(1800)
+        self.log_timer.timeout.connect(self._update_log_view)
+        self.log_timer.start()
 
     def _build_ui(self):
         root=QWidget();root.setObjectName('appRoot');self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(230);s=QVBoxLayout(sidebar);s.setContentsMargins(14,21,14,15);s.setSpacing(8)
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
-        sub=QLabel('ROUTE MANAGER  /  0.2.1');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
+        sub=QLabel('ROUTE MANAGER  /  0.2.2');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
         for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
@@ -344,30 +416,90 @@ class MainWindow(QMainWindow):
             b=QPushButton(label);b.clicked.connect(func);row.addWidget(b);lay.addWidget(box)
         lay.addStretch();self.stack.addWidget(page)
     def _build_diagnostics(self):
-        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
-        lay.addWidget(heading('Диагностика','Без вывода паролей, VPN-ключей и полного running-config.'))
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page)
+        lay.setContentsMargins(24,22,24,20);lay.setSpacing(10)
+        lay.addWidget(heading('Диагностика и журнал Telnet',
+            'Время, команды, очищенные ответы Keenetic и действия в приложении. Локальный журнал сохраняется между запусками.'))
+        lay.addWidget(QLabel('СВОДКА СОСТОЯНИЯ'))
         self.diagnostics=QTextEdit();self.diagnostics.setReadOnly(True)
-        self.diagnostics.setPlainText('Keenetic Route Manager 0.2.1\nНет загруженных данных.\n')
-        lay.addWidget(self.diagnostics,1)
+        self.diagnostics.setMaximumHeight(168)
+        self.diagnostics.setPlainText(f'Keenetic Route Manager {VERSION}\nНет загруженных данных.\n')
+        lay.addWidget(self.diagnostics)
+        lay.addWidget(QLabel('ИСТОРИЯ ДЕЙСТВИЙ И TELNET — ПОСЛЕДНИЕ СОБЫТИЯ'))
+        self.log_view=QTextEdit();self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFont('Consolas',9))
+        self.log_view.setLineWrapMode(QTextEdit.NoWrap)
+        self.log_view.setToolTip('Локальная история CLI: команды и очищенные ответы, время выполнения и ошибки.\n'
+                                     'Пароль и конфигурации с ключами не сохраняются. Полные файлы находятся на этом ПК.')
+        lay.addWidget(self.log_view,1)
+        loc=QLabel('Журнал хранится локально: ' + str(self.journal.path))
+        loc.setObjectName('muted');loc.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        loc.setWordWrap(True);lay.addWidget(loc)
         row=QHBoxLayout()
-        for label,cb in [('Проверить Telnet',self.check_connection),('Скопировать диагностику',self.copy_diag)]:
+        for label,cb in [('Проверить Telnet',self.check_connection),
+                         ('Обновить журнал',self._update_log_view),
+                         ('Скопировать журнал',self.copy_log),
+                         ('Открыть папку журнала',self.open_log_folder),
+                         ('Сохранить журнал как…',self.export_log),
+                         ('Скопировать диагностику',self.copy_diag)]:
             b=QPushButton(label);b.clicked.connect(cb);row.addWidget(b)
-        row.addStretch();lay.addLayout(row);self.stack.addWidget(page)
+        row.addStretch();lay.addLayout(row)
+        self.stack.addWidget(page)
+        self._update_log_view(force=True)
+
+    def _update_log_view(self, force=False):
+        if not hasattr(self, 'log_view'):
+            return
+        if not force and self.stack.currentIndex()!=4:
+            return
+        text=self.journal.render(count=100)
+        if self.log_view.toPlainText()!=text:
+            bar=self.log_view.verticalScrollBar()
+            at_bottom=bar.value() >= bar.maximum()-12
+            self.log_view.setPlainText(text)
+            if at_bottom:bar.setValue(bar.maximum())
+
+    def copy_log(self):
+        QApplication.clipboard().setText(self.log_view.toPlainText())
+        self.status.setText('Отображаемые записи журнала скопированы (без ключей).')
+
+    def open_log_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.journal.directory)))
+
+    def export_log(self):
+        path,_=QFileDialog.getSaveFileName(self,'Сохранить журнал',
+                                           'keenetic-diagnostics.txt','Текстовый файл (*.txt)')
+        if not path:return
+        try:
+            count=self.journal.export_plain(Path(path))
+            self.journal.record('application', f'Экспорт журнала: {Path(path).name}; событий: {count}',status='ok')
+            self.status.setText('Журнал экспортирован: '+str(path))
+        except Exception as exc:
+            warn('Ошибка экспорта',str(exc),self)
     def _show_page(self,n):
         self.stack.setCurrentIndex(n)
+        if hasattr(self,'journal') and hasattr(self,'nav') and 0 <= n < len(self.nav):
+            self.journal.record('navigation', 'Открыт раздел ' + self.nav[n].text().strip())
+        if n==4:self._update_log_view(force=True)
         for i,b in enumerate(self.nav): b.setProperty('active','true' if i==n else 'false');b.style().unpolish(b);b.style().polish(b)
     def _credentials(self): return (self.ip.text().strip(),self.port.value(),self.user.text().strip(),self.password.text())
     def _run(self,task,callback,label):
         if self.busy:return
         self.busy=True;self.read_button.setEnabled(False);self.check_button.setEnabled(False)
+        self.journal.record('action',label,status='start')
         self.busybar.setVisible(True);self.busybar.setRange(0,0);self.status.setText(label)
         worker=Worker(task);self.workers.append(worker)
         def complete(value):
             self._done(worker)
+            self.journal.record('action',label,status='ok')
             try:callback(value)
-            except Exception as ex:warn('Обработка результата',str(ex),self)
+            except Exception as ex:
+                self.journal.record('error',f'Ошибка обработки результата: {type(ex).__name__}: {ex}',status='error')
+                warn('Обработка результата',str(ex),self)
         def fail(message):
-            self._done(worker);self.status.setText('Ошибка: '+message);warn('Ошибка Keenetic',message,self)
+            self._done(worker);self.status.setText('Ошибка: '+message)
+            self.journal.record('error',label+': '+message,status='error')
+            warn('Ошибка Keenetic',message,self)
         worker.signals.finished.connect(complete);worker.signals.failed.connect(fail)
         worker.signals.progress.connect(lambda msg:self.status.setText(msg))
         self.threadpool.start(worker)
@@ -375,9 +507,9 @@ class MainWindow(QMainWindow):
         self.busy=False;self.read_button.setEnabled(True);self.check_button.setEnabled(True);self.busybar.setVisible(False)
         if worker in self.workers:self.workers.remove(worker)
     def check_connection(self):
-        creds=self._credentials();self._run(lambda p:RouterClient(*creds).ping(p),lambda _:self.status.setText('Связь с Keenetic подтверждена. Маршруты не изменены.'),'Проверяем Telnet…')
+        creds=self._credentials();self._run(lambda p:RouterClient(*creds, journal=self.journal).ping(p),lambda _:self.status.setText('Связь с Keenetic подтверждена. Маршруты не изменены.'),'Проверяем Telnet…')
     def refresh(self):
-        creds=self._credentials();self._run(lambda p:RouterClient(*creds).read(p),lambda result:self._accept(*result),'Читаем конфигурацию Keenetic…')
+        creds=self._credentials();self._run(lambda p:RouterClient(*creds, journal=self.journal).read(p),lambda result:self._accept(*result),'Читаем конфигурацию Keenetic…')
     def _accept(self,routes,interfaces,bad):
         self.routes=list(routes);self.interfaces=interfaces;self.bad_lines=list(bad)
         try:self.metadata=MetadataStore(MetadataStore.default_path(self.ip.text().strip()))
@@ -393,6 +525,8 @@ class MainWindow(QMainWindow):
         safe_lines='\n'.join(x[:180] for x in bad[:8])
         self.diagnostics.setPlainText(f'KeeneticOS 5.2 / IPv4 static routes\nМаршрутов: {len(routes)}\nИнтерфейсов: {len(counts)}\nНе распознано строк: {len(bad)}\nСтатус записи: {"РАЗРЕШЕНО с подтверждением" if self.loaded else "ТОЛЬКО ПРОСМОТР"}\n\n'+('Неизвестные строки маршрутов (без ключей):\n'+safe_lines if bad else 'Все статические маршруты разобраны.'))
         self.status.setText(f'Прочитано {len(routes)} маршрутов / интерфейсов {len(counts)} / ошибок {len(bad)}. '+('Готово.' if self.loaded else 'Запись заблокирована.'))
+        self.journal.record('router',f'Получено {len(routes)} маршрутов, интерфейсов: {len(counts)}, непонятных строк: {len(bad)}',
+                            status='ok' if self.loaded else 'warning')
         if bad:warn('Безопасный режим',f'Невозможно разобрать {len(bad)} строк. Только чтение и экспорт.\n{safe_lines}',self)
     def update_visible(self):
         if hasattr(self,'visible'):self.visible.setText(f'{self.proxy.rowCount()} записей')
@@ -414,7 +548,9 @@ class MainWindow(QMainWindow):
         commands=ordered_edit_commands(adds,removes)
         preview='\n'.join(commands[:18])+('\n…' if len(commands)>18 else '')
         message=f'{desc}\n\nДобавить: {len(adds)} / Удалить: {len(removes)}\n\nКоманды Keenetic:\n{preview}\n\nБудет создан локальный резервный список маршрутов. Продолжить?'
-        if not confirm('Подтверждение изменения маршрутов',message,self):return
+        if not confirm('Подтверждение изменения маршрутов',message,self):
+            self.journal.record('action',f'Отменено пользователем: {desc}');return
+        self.journal.record('action',f'Подтверждено: {desc}; команд: {len(commands)}',status='start')
         old=list(self.routes);credentials=self._credentials()
         def complete(result):
             routes,ifaces,backup=result;self._accept(routes,ifaces,[])
@@ -422,10 +558,11 @@ class MainWindow(QMainWindow):
                 try:after()
                 except Exception as ex:warn('Маршруты изменены; подпись не сохранена',str(ex),self)
             info('Маршруты сохранены',f'Изменения проверены повторным чтением.\nРезервная копия: {backup}',self)
-        self._run(lambda progress:RouterClient(*credentials).apply(adds,removes,old,progress),complete,'Записываем и проверяем маршруты…')
+        self._run(lambda progress:RouterClient(*credentials, journal=self.journal).apply(adds,removes,old,progress),complete,'Записываем и проверяем маршруты…')
     def add_route(self):
         if not self._require():return
         d=RouteDialog(self,self.interfaces,pref=self._preferred())
+        attach_tooltips(d)
         if d.exec()==QDialog.Accepted:
             adds,_,conflicts=plan_add([d.result],self.routes)
             if conflicts and not confirm('Перекрытие','Найдено перекрытие с маршрутом другого интерфейса. Добавить более специфичный маршрут?',self):return
@@ -437,6 +574,7 @@ class MainWindow(QMainWindow):
         old=chosen[0]
         if not can_edit(old):warn('Защита','Этот маршрут нельзя редактировать автоматически.',self);return
         d=RouteDialog(self,self.interfaces,current=old)
+        attach_tooltips(d)
         if d.exec()==QDialog.Accepted and d.result!=old:self._apply([d.result],[old],f'Изменить маршрут {old.cidr}')
     def delete_route(self):
         if not self._require():return
@@ -458,6 +596,7 @@ class MainWindow(QMainWindow):
             if self.metadata:
                 try:self.metadata.add_site(domain,ips);self.model.update(self.routes,self.interfaces,self.metadata)
                 except Exception:pass
+            attach_tooltips(dlg)
             if dlg.exec()==QDialog.Accepted:
                 adds,removes,notes=dlg.result
                 self._apply(adds,removes,domain+'\n'+'\n'.join(notes),after=lambda:self.metadata.add_site(domain,ips) if self.metadata else None)
@@ -512,6 +651,7 @@ class MainWindow(QMainWindow):
                 content=out.getvalue()
             else:content=export_text(self.routes,kind)
             Path(path).write_text(content,encoding='utf-8')
+            self.journal.record('export',f'Экспортировано {len(self.routes)} маршрутов в {Path(path).name}',status='ok')
             info('Экспорт',f'Сохранено {len(self.routes)} записей: {path}',self)
         except Exception as ex:warn('Ошибка экспорта',str(ex),self)
     def import_routes(self):
@@ -531,6 +671,7 @@ class MainWindow(QMainWindow):
         rr,bad=parse_text_routes(raw,chosen_interface)
         if bad:warn('Файл содержит неподдерживаемые строки','\n'.join(bad[:8]),self);return
         adds,dupes,conflicts=plan_add(rr,self.routes)
+        self.journal.record('import',f'Проверен файл {Path(path).name}: новых {len(adds)}, дубликатов {len(dupes)}',status='ok')
         if len(adds)>1000:warn('Лимит','Раздели импорт на части до 1000 записей.',self);return
         if conflicts and not confirm('Перекрытие подсетей',f'Конфликтов: {len(conflicts)}. Продолжить с предварительным просмотром?',self):return
         self._apply(adds,[],f'Импорт {len(adds)} новых маршрутов; уже покрыты: {len(dupes)}')
