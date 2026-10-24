@@ -1,4 +1,4 @@
-"""Keenetic Route Manager v0.2.3 — Qt UI over the proven CLI routing core."""
+"""Keenetic Route Manager v0.2.4 — Qt UI over the proven CLI routing core."""
 from __future__ import annotations
 
 import csv
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QSplitter, QSizePolicy, QInputDialog
 )
 from keenetic_manager.core import (Route, normalized_network, can_edit, add_command,
-                                  delete_command, ordered_edit_commands, plan_add,
+                                  delete_command, ordered_edit_commands, prepare_safe_operations, plan_add,
                                   parse_text_routes, save_export, export_text)
 from keenetic_manager.site_routes import site_ip_status, plan_site_interface_change
 from keenetic_manager.interface_choices import build_interface_choices, default_interface
@@ -27,7 +27,7 @@ from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_
 from keenetic_manager.controller import RouterClient, resolve_site
 from keenetic_manager.activity_log import ActivityJournal
 
-VERSION = '0.2.3'
+VERSION = '0.2.4'
 
 THEME = '''
 /* Do not paint every QWidget: that creates dark rectangles behind text labels. */
@@ -294,6 +294,15 @@ class SiteDialog(QDialog):
         idx=self.iface.findData(preferred)
         if idx>=0:self.iface.setCurrentIndex(idx)
         lay.addLayout(line)
+        duplicates=[]
+        for ip in ips:
+            status=site_ip_status(ip,routes)
+            if len({r.interface or r.gateway for r in status.best}) > 1:
+                duplicates.append(f'{ip}: ' + ', '.join(sorted({r.interface or r.gateway for r in status.best})))
+        if duplicates:
+            clash=QLabel('⚠ Два маршрута к одному IP: ' + '; '.join(duplicates) +
+                         '. Выбери интерфейс, который оставить. Перед записью увидишь все команды.')
+            clash.setObjectName('warning');clash.setWordWrap(True);lay.addWidget(clash)
         hint=QLabel('Общие подсети /16, /24 не изменяем: создаём исключения /32 только для адресов сайта.')
         hint.setObjectName('warning');hint.setWordWrap(True);lay.addWidget(hint)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
@@ -327,7 +336,7 @@ class MainWindow(QMainWindow):
         root=QWidget();root.setObjectName('appRoot');self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(230);s=QVBoxLayout(sidebar);s.setContentsMargins(14,21,14,15);s.setSpacing(8)
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
-        sub=QLabel('ROUTE MANAGER  /  0.2.3');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
+        sub=QLabel('ROUTE MANAGER  /  0.2.4');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
         for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
@@ -545,9 +554,22 @@ class MainWindow(QMainWindow):
     def _apply(self,adds,removes,desc,after=None):
         if not self._require():return
         if not adds and not removes:info('Без изменений','Маршруты уже соответствуют выбранному интерфейсу.',self);return
-        commands=ordered_edit_commands(adds,removes)
+        try:
+            operations, effective_adds, effective_removes, repairs = prepare_safe_operations(
+                adds, removes, self.routes)
+        except ValueError as ex:
+            warn('Неоднозначное состояние маршрутов', str(ex), self)
+            return
+        commands = [command for command, _ in operations]
         preview='\n'.join(commands[:18])+('\n…' if len(commands)>18 else '')
-        message=f'{desc}\n\nДобавить: {len(adds)} / Удалить: {len(removes)}\n\nКоманды Keenetic:\n{preview}\n\nБудет создан локальный резервный список маршрутов. Продолжить?'
+        repair_message = ('\n\nВНИМАНИЕ: обнаружены конфликтующие /32!\n'
+                          + '\n'.join(repairs)
+                          + '\nКратковременное переключение маршрута возможно.\n'
+                          if repairs else '')
+        message = (f'{desc}{repair_message}\n\n'
+                   f'CLI: +{len(effective_adds)} / -{len(effective_removes)}\n\n'
+                   f'Точный порядок команд Keenetic:\n{preview}\n\n'
+                   'Создадим резервную копию, проверим итоговую таблицу и только затем сохраним. Продолжить?')
         if not confirm('Подтверждение изменения маршрутов',message,self):
             self.journal.record('action',f'Отменено пользователем: {desc}');return
         self.journal.record('action',f'Подтверждено: {desc}; команд: {len(commands)}',status='start')
