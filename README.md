@@ -1,6 +1,6 @@
 # Keenetic Route Manager
 
-**Windows IPv4 static route manager for KeeneticOS** · version **0.2.0** · PySide6 / Qt.
+**Windows IPv4 static route manager for KeeneticOS** · version **0.2.1** · PySide6 / Qt.
 
 > Third-party community utility, not affiliated with or endorsed by Keenetic Ltd. The visual style is inspired by router control panels; no Keenetic logos, proprietary fonts, or firmware assets are bundled.
 
@@ -58,3 +58,7 @@
 ## Лицензия
 
 MIT (см. LICENSE).
+
+### Тема оформления 0.2.1
+
+Подписи (`QLabel`) больше не закрашиваются отдельными тёмными прямоугольниками: они прозрачны и наследуют фон секции/диалога. Фон задан только основным поверхностям, включая все пять страниц, боковую панель и диалоги. Стили таблиц, выделения маршрутов и поля ввода не изменялись.
