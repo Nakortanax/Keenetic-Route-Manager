@@ -1,4 +1,4 @@
-"""Keenetic Route Manager v0.2.0 — Qt UI over the proven CLI routing core."""
+"""Keenetic Route Manager v0.2.1 — Qt UI over the proven CLI routing core."""
 from __future__ import annotations
 
 import csv
@@ -26,11 +26,16 @@ from keenetic_manager.interface_choices import build_interface_choices, default_
 from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_network
 from keenetic_manager.controller import RouterClient, resolve_site
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 
 THEME = '''
-QWidget { background:#101b2a; color:#d8e7f7; font-family:'Segoe UI',Arial; font-size:12px; }
-QMainWindow { background:#101b2a; }
+/* Do not paint every QWidget: that creates dark rectangles behind text labels. */
+QWidget { color:#d8e7f7; font-family:'Segoe UI',Arial; font-size:12px; }
+QMainWindow, QWidget#appRoot, QWidget#contentRoot, QWidget#pageSurface,
+QStackedWidget { background:#101b2a; }
+/* Labels and check boxes show the background of their containing surface. */
+QLabel { background:transparent; border:none; }
+QCheckBox { background:transparent; }
 QFrame#sidebar { background:#182435; border-right:1px solid #29384a; }
 QFrame#topbar { background:#172335; border-bottom:1px solid #29394d; }
 QFrame#panel, QFrame#statCard { background:#1b2a3d; border:1px solid #2d4258; border-radius:11px; }
@@ -82,7 +87,7 @@ def confirm(title, message, parent=None):
 
 
 def heading(text, muted=''):
-    block = QWidget()
+    block = QWidget(); block.setObjectName('headingBlock')
     box = QVBoxLayout(block); box.setContentsMargins(0,0,0,5); box.setSpacing(2)
     t = QLabel(text); t.setObjectName('pageTitle'); box.addWidget(t)
     if muted:
@@ -247,10 +252,10 @@ class MainWindow(QMainWindow):
         self._build_ui();self._show_page(0)
 
     def _build_ui(self):
-        root=QWidget();self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
+        root=QWidget();root.setObjectName('appRoot');self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(230);s=QVBoxLayout(sidebar);s.setContentsMargins(14,21,14,15);s.setSpacing(8)
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
-        sub=QLabel('ROUTE MANAGER  /  0.2.0');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
+        sub=QLabel('ROUTE MANAGER  /  0.2.1');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
         for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
@@ -259,7 +264,7 @@ class MainWindow(QMainWindow):
         divider=QFrame();divider.setFrameShape(QFrame.HLine);divider.setStyleSheet('color:#30485d');s.addWidget(divider)
         tip=QLabel('●  Подключение только в LAN\n     Пароль хранится в памяти');tip.setObjectName('muted');s.addWidget(tip)
         allbox.addWidget(sidebar)
-        main=QWidget();m=QVBoxLayout(main);m.setContentsMargins(0,0,0,0);m.setSpacing(0);allbox.addWidget(main,1)
+        main=QWidget();main.setObjectName('contentRoot');m=QVBoxLayout(main);m.setContentsMargins(0,0,0,0);m.setSpacing(0);allbox.addWidget(main,1)
         top=QFrame();top.setObjectName('topbar');h=QHBoxLayout(top);h.setContentsMargins(22,12,22,12);h.setSpacing(9)
         h.addWidget(QLabel('РОУТЕР'));self.ip=QLineEdit('192.168.1.1');self.ip.setFixedWidth(130);h.addWidget(self.ip)
         h.addWidget(QLabel('ПОРТ'));self.port=QSpinBox();self.port.setRange(1,65535);self.port.setValue(23);self.port.setFixedWidth(82);h.addWidget(self.port)
@@ -282,7 +287,7 @@ class MainWindow(QMainWindow):
         value=QLabel('—');value.setObjectName('cardValue');layout.addWidget(value)
         return frame,value
     def _build_dashboard(self):
-        page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(25,24,25,23);lay.setSpacing(20)
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(25,24,25,23);lay.setSpacing(20)
         lay.addWidget(heading('Состояние маршрутизации','Проверяй конфигурацию Keenetic и используй безопасное управление маршрутами.'))
         stats=QHBoxLayout();stats.setSpacing(14);self.stat_widgets=[]
         for name in ('Маршрутов','Интерфейсов','Маршрутов VPN','Отключённых'):
@@ -299,7 +304,7 @@ class MainWindow(QMainWindow):
         small=QLabel('Безопасность: перед записью создаётся резервная копия списка маршрутов; команды отправляются только после подтверждения.');small.setObjectName('muted');small.setWordWrap(True);lay.addWidget(small)
         lay.addStretch();self.stack.addWidget(page)
     def _build_routes(self):
-        page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(24,18,24,18);lay.setSpacing(13)
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,18,24,18);lay.setSpacing(13)
         lay.addWidget(heading('IPv4-маршруты','Сортировка и фильтрация тысяч записей без загрузки веб-интерфейса роутера.'))
         tools=QHBoxLayout();tools.setSpacing(9)
         for name,func,style in [('+ Маршрут',self.add_route,'primary'),('✎ Изменить',self.edit_route,''),('− Удалить',self.delete_route,'danger'),('◉ Найти сайт',self.find_site,''),('☰ Подписать',self.label_route,''),('⌕ Определить IP',self.enrich_route,'')]:
@@ -322,7 +327,7 @@ class MainWindow(QMainWindow):
         self.proxy.modelReset.connect(self.update_visible)
         self.stack.addWidget(page)
     def _build_sites(self):
-        page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
         lay.addWidget(heading('Сайты и домены','Найди адреса домена и переключи точные IP-маршруты между ISP и VPN.'))
         f=panel();v=QVBoxLayout(f);v.setContentsMargins(24,24,24,24)
         v.addWidget(QLabel('ДОМЕН САЙТА'));self.domain=QLineEdit();self.domain.setPlaceholderText('например: nnmclub.to или www.zfilm.homes');v.addWidget(self.domain)
@@ -331,7 +336,7 @@ class MainWindow(QMainWindow):
         tip=QLabel('При смене интерфейса программа не переносит общие сети /16, /24. Для конкретного сайта создаются точные исключения /32. Сайт может использовать несколько адресов и CDN.');tip.setObjectName('muted');tip.setWordWrap(True);v.addWidget(tip)
         lay.addWidget(f);lay.addStretch();self.stack.addWidget(page)
     def _build_exports(self):
-        page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
         lay.addWidget(heading('Импорт и экспорт','Предпросмотр изменений, сохранение локальных комментариев и совместимость с Keenetic BAT.'))
         for title,desc,label,func in [('Экспорт маршрутов','JSON / CSV с подписями, CLI, BAT (BAT не хранит подписи сайтов).','Экспортировать',self.export_routes),('Импорт IPv4','BAT, CLI или список CIDR; перед записью проверяются существующие маршруты.','Открыть файл',self.import_routes)]:
             box=panel();row=QHBoxLayout(box);row.setContentsMargins(22,18,22,18)
@@ -339,10 +344,10 @@ class MainWindow(QMainWindow):
             b=QPushButton(label);b.clicked.connect(func);row.addWidget(b);lay.addWidget(box)
         lay.addStretch();self.stack.addWidget(page)
     def _build_diagnostics(self):
-        page=QWidget();lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
+        page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
         lay.addWidget(heading('Диагностика','Без вывода паролей, VPN-ключей и полного running-config.'))
         self.diagnostics=QTextEdit();self.diagnostics.setReadOnly(True)
-        self.diagnostics.setPlainText('Keenetic Route Manager 0.2.0\nНет загруженных данных.\n')
+        self.diagnostics.setPlainText('Keenetic Route Manager 0.2.1\nНет загруженных данных.\n')
         lay.addWidget(self.diagnostics,1)
         row=QHBoxLayout()
         for label,cb in [('Проверить Telnet',self.check_connection),('Скопировать диагностику',self.copy_diag)]:
