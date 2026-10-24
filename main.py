@@ -1,4 +1,4 @@
-"""Keenetic Route Manager v0.2.2 — Qt UI over the proven CLI routing core."""
+"""Keenetic Route Manager v0.2.3 — Qt UI over the proven CLI routing core."""
 from __future__ import annotations
 
 import csv
@@ -27,7 +27,7 @@ from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_
 from keenetic_manager.controller import RouterClient, resolve_site
 from keenetic_manager.activity_log import ActivityJournal
 
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 
 THEME = '''
 /* Do not paint every QWidget: that creates dark rectangles behind text labels. */
@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
         root=QWidget();root.setObjectName('appRoot');self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(230);s=QVBoxLayout(sidebar);s.setContentsMargins(14,21,14,15);s.setSpacing(8)
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
-        sub=QLabel('ROUTE MANAGER  /  0.2.2');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
+        sub=QLabel('ROUTE MANAGER  /  0.2.3');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
         for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
