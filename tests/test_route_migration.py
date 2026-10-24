@@ -75,11 +75,37 @@ class RouteMigration(unittest.TestCase):
         self.assertFalse(fake.saved)
         self.assertEqual(route_fingerprint(fake.current), route_fingerprint([self.old]))
 
-    def test_existing_duplicate_routes_blocked_before_mutation(self):
+    def test_repair_duplicate_to_isp(self):
         fake = FakeCLI([self.old, self.new])
-        with self.assertRaisesRegex(TransportError, 'одновременно есть маршруты'):
-            self.execute(fake, [], [self.old], [self.old, self.new])
+        routes, _, _ = self.execute(fake, [], [self.old], [self.old, self.new])
+        self.assertEqual(fake.commands[:3], [
+            'no ip route 188.114.96.3 ISP',
+            'no ip route 188.114.96.3 Wireguard2',
+            'ip route 188.114.96.3 ISP auto'])
+        self.assertEqual(route_fingerprint(routes),route_fingerprint([self.new]))
+        self.assertTrue(fake.saved)
+
+    def test_repair_duplicate_to_vpn(self):
+        fake = FakeCLI([self.old, self.new])
+        routes, _, _ = self.execute(fake, [], [self.new], [self.old, self.new])
+        self.assertEqual(fake.commands[:3], [
+            'no ip route 188.114.96.3 ISP',
+            'no ip route 188.114.96.3 Wireguard2',
+            'ip route 188.114.96.3 Wireguard2 auto'])
+        self.assertEqual(route_fingerprint(routes),route_fingerprint([self.old]))
+        self.assertTrue(fake.saved)
+
+    def test_ambiguous_conflict_rejected_without_mutation(self):
+        fake = FakeCLI([self.old, self.new])
+        with self.assertRaisesRegex(TransportError, 'однозначно'):
+            self.execute(fake, [self.new], [], [self.old, self.new])
         self.assertFalse(fake.commands)
+        self.assertFalse(fake.saved)
+
+    def test_rollback_on_rebuild_error_does_not_save(self):
+        fake = FakeCLI([self.old, self.new], error_on='ip route 188.114.96.3 ISP auto')
+        with self.assertRaisesRegex(TransportError, 'НЕ подтверждено'):
+            self.execute(fake, [], [self.old], [self.old, self.new])
         self.assertFalse(fake.saved)
 
     def test_inverse_steps(self):
