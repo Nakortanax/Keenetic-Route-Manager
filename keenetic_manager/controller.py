@@ -11,7 +11,7 @@ import ipaddress
 import os
 import socket
 from .core import (Route, parse_running_config, parse_interface_descriptions, can_edit,
-                   ordered_edit_commands, ordered_edit_operations, save_export)
+                   ordered_edit_commands, ordered_edit_operations, prepare_safe_operations, save_export)
 from .transport import TelnetSession, TransportError
 
 
@@ -25,8 +25,12 @@ def check_lan_host(host: str) -> str:
     return str(ip)
 
 
+def route_item(r: Route) -> tuple:
+    return r.cidr, r.interface, r.auto, r.metric, r.gateway, r.reject, r.disabled
+
+
 def route_fingerprint(routes: list[Route]) -> Counter:
-    return Counter((r.cidr, r.interface, r.auto, r.metric, r.gateway, r.reject, r.disabled) for r in routes)
+    return Counter(route_item(r) for r in routes)
 
 
 def resolve_site(domain: str) -> list[str]:
@@ -76,22 +80,22 @@ class RouterClient:
             raise ValueError('Нет подтверждённых изменений')
         if len(adds)+len(removes) > 1000 or any(not can_edit(r) for r in adds+removes):
             raise ValueError('Изменение неподдерживаемых маршрутов или более 1000 операций запрещено')
-        operations = ordered_edit_operations(adds, removes)
+        # Operations depend on the fresh, verified router state.
         with self._session(progress) as session:
             fresh, interfaces, rejected = self._read(session)
             if rejected:
                 raise TransportError(f'Неизвестные строки конфигурации: {len(rejected)}. Запись отменена')
             if route_fingerprint(fresh) != route_fingerprint(old):
                 raise TransportError('Маршруты изменились после чтения. Обнови список и повтори операцию')
-            # Refuse ambiguous duplicate exact prefixes left by older versions.
-            touched = {r.cidr for r in adds + removes}
-            for cidr in touched:
-                active = [r for r in fresh if r.cidr == cidr and not r.disabled]
-                if len({r.interface or r.gateway for r in active}) > 1:
-                    options = ', '.join(sorted({r.interface or r.gateway for r in active}))
-                    raise TransportError(f'{cidr}: одновременно есть маршруты через {options}. '
-                                         'Автоматические изменения запрещены: проверь текущую '
-                                         'конфигурацию Keenetic и восстанови один маршрут вручную.')
+            try:
+                operations, effective_adds, effective_removes, repairs = prepare_safe_operations(
+                    adds, removes, fresh)
+            except ValueError as ex:
+                raise TransportError(str(ex)) from ex
+            if repairs and self.journal:
+                self.journal.record('conflict-repair',
+                    'Пользователь подтвердил очистку конфликтующих точных маршрутов: '
+                    + '; '.join(repairs), status='start')
             for r in removes:
                 if r.key not in {x.key for x in fresh}:
                     raise TransportError(f'{r.cidr}: удаляемый маршрут уже отсутствует')
@@ -115,6 +119,15 @@ class RouterClient:
                 if unknown:
                     raise TransportError(f'После записи {len(unknown)} неопознанных строк')
                 actual_keys = {r.key for r in actual}
+                # Confirm the ENTIRE routing table, not only a few inserted rows.
+                expected = route_fingerprint(fresh)
+                for r in effective_removes:
+                    expected[route_item(r)] -= 1
+                for r in effective_adds:
+                    expected[route_item(r)] += 1
+                expected += Counter()  # discard zero/negative counts
+                if route_fingerprint(actual) != expected:
+                    raise TransportError('После записи таблица маршрутов отличается от плана')
                 if not {r.key for r in adds}.issubset(actual_keys):
                     raise TransportError('Новые маршруты не подтверждены')
                 if ({r.key for r in removes}-{r.key for r in adds}) & actual_keys:
