@@ -11,7 +11,7 @@ import ipaddress
 import os
 import socket
 from .core import (Route, parse_running_config, parse_interface_descriptions, can_edit,
-                   ordered_edit_commands, save_export)
+                   ordered_edit_commands, ordered_edit_operations, save_export)
 from .transport import TelnetSession, TransportError
 
 
@@ -76,13 +76,22 @@ class RouterClient:
             raise ValueError('Нет подтверждённых изменений')
         if len(adds)+len(removes) > 1000 or any(not can_edit(r) for r in adds+removes):
             raise ValueError('Изменение неподдерживаемых маршрутов или более 1000 операций запрещено')
-        commands = ordered_edit_commands(adds, removes)
+        operations = ordered_edit_operations(adds, removes)
         with self._session(progress) as session:
             fresh, interfaces, rejected = self._read(session)
             if rejected:
                 raise TransportError(f'Неизвестные строки конфигурации: {len(rejected)}. Запись отменена')
             if route_fingerprint(fresh) != route_fingerprint(old):
                 raise TransportError('Маршруты изменились после чтения. Обнови список и повтори операцию')
+            # Refuse ambiguous duplicate exact prefixes left by older versions.
+            touched = {r.cidr for r in adds + removes}
+            for cidr in touched:
+                active = [r for r in fresh if r.cidr == cidr and not r.disabled]
+                if len({r.interface or r.gateway for r in active}) > 1:
+                    options = ', '.join(sorted({r.interface or r.gateway for r in active}))
+                    raise TransportError(f'{cidr}: одновременно есть маршруты через {options}. '
+                                         'Автоматические изменения запрещены: проверь текущую '
+                                         'конфигурацию Keenetic и восстанови один маршрут вручную.')
             for r in removes:
                 if r.key not in {x.key for x in fresh}:
                     raise TransportError(f'{r.cidr}: удаляемый маршрут уже отсутствует')
@@ -97,20 +106,46 @@ class RouterClient:
             save_export(backup, fresh, 'json')
             if self.journal:
                 self.journal.record('backup', f'Сохранены {len(fresh)} маршрутов перед изменениями: {backup}', status='ok')
-            for cmd in commands:
-                session.command(cmd, timeout=35)
-            actual, ifaces, unknown = self._read(session)
-            if unknown:
-                raise TransportError(f'После записи {len(unknown)} неопознанных строк; не сохранено. Бэкап: {backup}')
-            actual_keys = {r.key for r in actual}
-            if not {r.key for r in adds}.issubset(actual_keys):
-                raise TransportError(f'Новые маршруты не подтверждены; не сохранено. Бэкап: {backup}')
-            if ({r.key for r in removes}-{r.key for r in adds}) & actual_keys:
-                raise TransportError(f'Старые маршруты остались; не сохранено. Бэкап: {backup}')
-            specs = {(r.cidr,r.interface,r.auto,r.metric,r.disabled) for r in actual}
-            if not {(r.cidr,r.interface,r.auto,r.metric,r.disabled) for r in adds}.issubset(specs):
-                raise TransportError(f'Параметры маршрутов не совпали; не сохранено. Бэкап: {backup}')
-            session.command('system configuration save', timeout=45)
+            undo: list[str] = []
+            try:
+                for cmd, inverse in operations:
+                    session.command(cmd, timeout=35)
+                    undo.append(inverse)
+                actual, ifaces, unknown = self._read(session)
+                if unknown:
+                    raise TransportError(f'После записи {len(unknown)} неопознанных строк')
+                actual_keys = {r.key for r in actual}
+                if not {r.key for r in adds}.issubset(actual_keys):
+                    raise TransportError('Новые маршруты не подтверждены')
+                if ({r.key for r in removes}-{r.key for r in adds}) & actual_keys:
+                    raise TransportError('Старые маршруты остались')
+                specs = {(r.cidr, r.interface, r.auto, r.metric, r.disabled) for r in actual}
+                if not {(r.cidr, r.interface, r.auto, r.metric, r.disabled) for r in adds}.issubset(specs):
+                    raise TransportError('Параметры маршрутов не совпали')
+                session.command('system configuration save', timeout=45)
+            except Exception as failure:
+                # Commands can take effect even if a later command fails.
+                # Attempt inverse operations in reverse order; do not save.
+                failures = []
+                for inverse in reversed(undo):
+                    try:
+                        session.command(inverse, timeout=35)
+                    except Exception as rollback_exc:
+                        failures.append(f'{inverse}: {rollback_exc}')
+                try:
+                    present, _, parse_errors = self._read(session)
+                    recovered = not parse_errors and route_fingerprint(present) == route_fingerprint(fresh)
+                except Exception:
+                    recovered = False
+                if self.journal:
+                    self.journal.record('rollback',
+                        f'Ошибка изменения; откат: {"подтверждён" if recovered else "НЕ ПОДТВЕРЖДЁН"}; '
+                        f'ошибок обратных команд: {len(failures)}. Бэкап: {backup}',
+                        status='ok' if recovered else 'error')
+                status = ('Исходные маршруты восстановлены (повторное чтение).' if recovered
+                          else 'Состояние маршрутов НЕ подтверждено; требуется ручная проверка.')
+                raise TransportError(f'Ошибка записи: {failure}. {status} '
+                                     f'Команда сохранения не подтверждена. Бэкап: {backup}') from failure
             if self.journal:
                 self.journal.record('router', f'Изменения подтверждены повторным чтением: добавлено {len(adds)}, удалено {len(removes)}. Сохранено.', status='ok')
         return actual, ifaces, backup
