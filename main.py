@@ -26,8 +26,9 @@ from keenetic_manager.interface_choices import build_interface_choices, default_
 from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_network
 from keenetic_manager.controller import RouterClient, resolve_site
 from keenetic_manager.activity_log import ActivityJournal
+from keenetic_manager.dns_routes import DnsRouter, create_commands, remove_commands, safe_domain, safe_identifier
 
-VERSION = '0.2.4'
+VERSION = '0.3.0-dev'
 
 THEME = '''
 /* Do not paint every QWidget: that creates dark rectangles behind text labels. */
@@ -338,7 +339,7 @@ class MainWindow(QMainWindow):
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
         sub=QLabel('ROUTE MANAGER  /  0.2.4');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
-        for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
+        for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика'),('◎','DNS-маршруты')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _,n=i:self._show_page(n));s.addWidget(b);self.nav.append(b)
         s.addStretch()
@@ -356,7 +357,7 @@ class MainWindow(QMainWindow):
         self.read_button=QPushButton('↻  Обновить маршруты');self.read_button.setObjectName('primary');self.read_button.clicked.connect(self.refresh);h.addWidget(self.read_button)
         m.addWidget(top)
         self.stack=QStackedWidget();m.addWidget(self.stack,1)
-        self._build_dashboard();self._build_routes();self._build_sites();self._build_exports();self._build_diagnostics()
+        self._build_dashboard();self._build_routes();self._build_sites();self._build_exports();self._build_diagnostics();self._build_dns_routes()
         footer=QFrame();footer.setObjectName('topbar');fl=QHBoxLayout(footer);fl.setContentsMargins(19,7,19,7)
         self.status=QLabel('Готово. Подключись к Keenetic и прочитай маршруты.');self.status.setObjectName('muted');fl.addWidget(self.status,1)
         self.busybar=QProgressBar();self.busybar.setFixedWidth(120);self.busybar.setVisible(False);fl.addWidget(self.busybar)
@@ -416,6 +417,95 @@ class MainWindow(QMainWindow):
         v.addSpacing(12)
         tip=QLabel('При смене интерфейса программа не переносит общие сети /16, /24. Для конкретного сайта создаются точные исключения /32. Сайт может использовать несколько адресов и CDN.');tip.setObjectName('muted');tip.setWordWrap(True);v.addWidget(tip)
         lay.addWidget(f);lay.addStretch();self.stack.addWidget(page)
+
+    def _build_dns_routes(self):
+        page=QWidget();page.setObjectName('pageSurface')
+        lay=QVBoxLayout(page);lay.setContentsMargins(24,20,24,18);lay.setSpacing(12)
+        lay.addWidget(heading('DNS-маршрутизация по FQDN',
+            'Keenetic DNS-proxy: IP-адреса обновляются по DNS-ответам, без статических /32.'))
+        note=QLabel('Применяется к выбранной политике устройств, а не ко всему роутеру. '
+            'Для работы клиент должен использовать DNS Keenetic/совместимый DNS-proxy. '
+            'Существующие группы, созданные вручную, доступны только для просмотра.')
+        note.setWordWrap(True);note.setObjectName('muted');lay.addWidget(note)
+        box=panel();v=QVBoxLayout(box);v.setContentsMargins(18,16,18,16)
+        row=QHBoxLayout()
+        self.dns_domain=QLineEdit();self.dns_domain.setPlaceholderText('example.org')
+        self.dns_group=QLineEdit();self.dns_group.setText('KRM_MY_SITE')
+        self.dns_policy=QLineEdit('Policy1')
+        self.dns_interface=QComboBox()
+        for label,edit in [('ДОМЕН',self.dns_domain),('ГРУППА KRM_',self.dns_group),
+                           ('ПОЛИТИКА',self.dns_policy),('ИНТЕРФЕЙС',self.dns_interface)]:
+            sub=QVBoxLayout();sub.addWidget(QLabel(label));sub.addWidget(edit);row.addLayout(sub,1)
+        v.addLayout(row)
+        controls=QHBoxLayout()
+        b=QPushButton('Обновить DNS-правила');b.clicked.connect(self.dns_refresh);controls.addWidget(b)
+        b=QPushButton('Создать DNS-маршрут');b.setObjectName('primary');b.clicked.connect(self.dns_add);controls.addWidget(b)
+        b=QPushButton('Удалить выбранное KRM-правило');b.setObjectName('danger');b.clicked.connect(self.dns_delete);controls.addWidget(b)
+        controls.addStretch();v.addLayout(controls);lay.addWidget(box)
+        self.dns_table=QTableWidget();self.dns_table.setColumnCount(5)
+        self.dns_table.setHorizontalHeaderLabels(['Политика','FQDN-группа','Домены','Интерфейс','Управление'])
+        self.dns_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.dns_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.dns_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.dns_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.dns_table,1)
+        self.dns_rules=[]
+        self.stack.addWidget(page)
+
+    def _dns_show_rules(self, rules):
+        self.dns_rules=list(rules)
+        self.dns_table.setRowCount(len(rules))
+        for idx,r in enumerate(rules):
+            for col,val in enumerate((r.policy,r.group,', '.join(r.domains),
+                                      r.interface + (' auto' if r.auto else ''),
+                                      'KRM' if r.managed else 'Только просмотр')):
+                self.dns_table.setItem(idx,col,QTableWidgetItem(val))
+        self.dns_table.resizeColumnsToContents()
+        self.status.setText(f'Загружено DNS-маршрутов: {len(rules)}')
+
+    def dns_refresh(self):
+        creds=self._credentials()
+        self._run(lambda p:DnsRouter(RouterClient(*creds,journal=self.journal)).read(p),
+                  self._dns_show_rules,'Читаем DNS-маршруты Keenetic…')
+
+    def _dns_confirm_commands(self, commands, action):
+        return confirm('DNS-маршрутизация: '+action,
+            'Будут отправлены команды в Keenetic:\\n\\n'
+            + '\\n'.join(commands) + '\\n\\nПосле выполнения настройки будут проверены и сохранены.',self)
+
+    def dns_add(self):
+        try:
+            policy=safe_identifier(self.dns_policy.text())
+            group=safe_identifier(self.dns_group.text())
+            domain=safe_domain(self.dns_domain.text())
+            interface=self.dns_interface.currentData()
+            if not interface:
+                raise ValueError('Сначала загрузи интерфейсы кнопкой «Обновить маршруты»')
+            commands=create_commands(policy,group,domain,interface)
+        except ValueError as exc:
+            warn('DNS-маршрут',str(exc),self);return
+        if not self._dns_confirm_commands(commands,'добавление'):return
+        creds=self._credentials()
+        self._run(lambda p:DnsRouter(RouterClient(*creds,journal=self.journal)).apply(
+            policy=policy,group=group,domain=domain,interface=interface,progress=p),
+            self._dns_show_rules,'Создаём DNS-маршрут…')
+
+    def dns_delete(self):
+        idx=self.dns_table.currentRow()
+        if idx<0 or idx>=len(self.dns_rules):
+            warn('DNS-маршрут','Выбери строку в таблице',self);return
+        rule=self.dns_rules[idx]
+        try:
+            commands=remove_commands(rule)
+        except ValueError as exc:
+            warn('DNS-маршрут',str(exc),self);return
+        if not self._dns_confirm_commands(commands,'удаление'):return
+        creds=self._credentials()
+        self._run(lambda p:DnsRouter(RouterClient(*creds,journal=self.journal)).apply(
+            policy=rule.policy,group=rule.group,domain=rule.domains[0],
+            interface=rule.interface,remove=True,progress=p),
+            self._dns_show_rules,'Удаляем DNS-маршрут…')
+
     def _build_exports(self):
         page=QWidget();page.setObjectName('pageSurface');lay=QVBoxLayout(page);lay.setContentsMargins(24,22,24,20)
         lay.addWidget(heading('Импорт и экспорт','Предпросмотр изменений, сохранение локальных комментариев и совместимость с Keenetic BAT.'))
@@ -529,6 +619,11 @@ class MainWindow(QMainWindow):
         for name in sorted(set(r.interface for r in routes if r.interface)|set(interfaces)):
             self.iface_filter.addItem(f'{name}  ·  {interfaces.get(name,name)}',name)
         self.iface_filter.blockSignals(False);self.proxy.set_interface('');self.update_visible()
+        self.dns_interface.clear()
+        for name in sorted(interfaces):
+            self.dns_interface.addItem(f'{name} · {interfaces[name]}',name)
+        idx=self.dns_interface.findData('Wireguard2')
+        if idx>=0:self.dns_interface.setCurrentIndex(idx)
         counts=Counter(r.interface for r in routes)
         for lbl,value in zip(self.stat_widgets,(len(routes),len(counts),sum(n for name,n in counts.items() if name.lower().startswith('wireguard')),sum(r.disabled for r in routes))):lbl.setText(f'{value:,}'.replace(',',' '))
         safe_lines='\n'.join(x[:180] for x in bad[:8])
