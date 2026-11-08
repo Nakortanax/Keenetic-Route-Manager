@@ -26,17 +26,17 @@ try {
   [void]$fs.Seek($pos,[IO.SeekOrigin]::Begin)
   if ($r.ReadUInt32() -ne 0x4550 -or $r.ReadUInt16() -ne 0x8664) { throw 'Not Windows AMD64 PE' }
 } finally { $fs.Dispose() }
-$dest=Join-Path $Root 'release\KeeneticRouteManager-0.2.4-Windows-x64'
+$dest=Join-Path $Root 'release\KeeneticRouteManager-0.3.0-dev-Windows-x64'
 New-Item -Type Directory -Force -Path $dest | Out-Null
 Copy-Item $exe (Join-Path $dest 'KeeneticRouteManager.exe') -Force
 Copy-Item (Join-Path $Root 'LICENSE') (Join-Path $dest 'LICENSE.txt') -Force
 $sha=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath (Join-Path $dest 'SHA256SUMS.txt') -Encoding ASCII -Value ($sha+'  KeeneticRouteManager.exe')
-$zip=Join-Path $Root 'release\KeeneticRouteManager-0.2.4-Windows-x64.zip'
+$zip=Join-Path $Root 'release\KeeneticRouteManager-0.3.0-dev-Windows-x64.zip'
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $dest '*') -DestinationPath $zip -CompressionLevel Optimal
 $zipsha=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Content -LiteralPath ($zip+'.sha256') -Encoding ASCII -Value ($zipsha+'  KeeneticRouteManager-0.2.4-Windows-x64.zip')
+Set-Content -LiteralPath ($zip+'.sha256') -Encoding ASCII -Value ($zipsha+'  KeeneticRouteManager-0.3.0-dev-Windows-x64.zip')
 Write-Host ('EXE: '+$exe)
 Write-Host ('EXE SHA256: '+$sha)
 Write-Host ('ZIP: '+$zip)
