@@ -18,7 +18,8 @@ class QtSmoke(unittest.TestCase):
     def test_window_layout(self):
         from main import MainWindow
         window=MainWindow()
-        self.assertEqual(window.stack.count(),5)
+        self.assertEqual(window.stack.count(),6)
+        self.assertEqual(window.nav[5].text().strip().split()[-1],'DNS-маршруты')
         self.assertEqual(window.model.columnCount(),9)
         self.assertEqual(window.ip.text(),'192.168.1.1')
         self.assertFalse(window.loaded)
