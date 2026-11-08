@@ -470,8 +470,8 @@ class MainWindow(QMainWindow):
 
     def _dns_confirm_commands(self, commands, action):
         return confirm('DNS-маршрутизация: '+action,
-            'Будут отправлены команды в Keenetic:\\n\\n'
-            + '\\n'.join(commands) + '\\n\\nПосле выполнения настройки будут проверены и сохранены.',self)
+            'Будут отправлены команды в Keenetic:\n\n'
+            + '\n'.join(commands) + '\n\nПосле выполнения настройки будут проверены и сохранены.',self)
 
     def dns_add(self):
         try:
