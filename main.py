@@ -1,4 +1,4 @@
-"""Keenetic Route Manager v0.2.4 — Qt UI over the proven CLI routing core."""
+"""Keenetic Route Manager v0.3.0-dev — static IPv4 and policy-based DNS routes."""
 from __future__ import annotations
 
 import csv
