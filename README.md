@@ -1,8 +1,25 @@
 # Keenetic Route Manager
 
-**Windows IPv4 static route manager for KeeneticOS** · version **0.2.4** · PySide6 / Qt.
+**Windows IPv4 static route manager for KeeneticOS** · version **0.3.0-dev** (DNS routing preview) · PySide6 / Qt.
 
 > Third-party community utility, not affiliated with or endorsed by Keenetic Ltd. The visual style is inspired by router control panels; no Keenetic logos, proprietary fonts, or firmware assets are bundled.
+
+## DNS-маршрутизация KeeneticOS 5.2 (новая вкладка, предварительная версия)
+
+Для DNS-маршрутов добавлена отдельная вкладка **«DNS-маршруты»**:
+
+- Считывание FQDN-групп и привязок из `show running-config` без сохранения паролей и ключей.
+- Создание/редактирование групп (домены и IPv4-подсети), а также исключений (`exclude`).
+- Привязка группы к `Policy0`, `Policy1`, другим найденным политикам или общей таблице `dns-proxy`.
+- Выбор WAN/VPN-интерфейса и опций `auto` / `reject`; удаление конкретного правила без удаления самой группы.
+- Полный предпросмотр CLI, повторное чтение, локальный DNS-бэкап, итоговая сверка и только затем `system configuration save`.
+- При ошибке — попытка обратных команд и контроль фактического состояния перед сообщением пользователю.
+
+**Ограничения:** IPv6-адреса/подсети доступны для чтения, но пока не редактируются через приложение. Неподдерживаемый синтаксис блокирует запись. Изменение содержимого FQDN-группы затрагивает все политики, использующие её. При замене правила может измениться его приоритет. Приложение не меняет политику устройств, DNS/DHCP, AdGuard Home и настройки DoH на клиентах.
+
+**Условие работы:** устройство должно использовать DNS-прокси Keenetic, обычно `192.168.1.1`. Новый интерфейс не проходил испытаний на реальном Keenetic и Windows GUI; стабильный выпуск EXE v0.2.4 не затронут.
+
+Пошаговая инструкция: `docs/DNS_ROUTING_2026-11-08.md`.
 
 ## Возможности
 
