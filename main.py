@@ -26,8 +26,9 @@ from keenetic_manager.interface_choices import build_interface_choices, default_
 from keenetic_manager.metadata import MetadataStore, normalize_domain, identify_network
 from keenetic_manager.controller import RouterClient, resolve_site
 from keenetic_manager.activity_log import ActivityJournal
+from keenetic_manager.dns_ui import DnsRoutingPage
 
-VERSION = '0.2.4'
+VERSION = '0.3.0-dev'
 
 THEME = '''
 /* Do not paint every QWidget: that creates dark rectangles behind text labels. */
@@ -336,9 +337,9 @@ class MainWindow(QMainWindow):
         root=QWidget();root.setObjectName('appRoot');self.setCentralWidget(root);allbox=QHBoxLayout(root);allbox.setContentsMargins(0,0,0,0);allbox.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName('sidebar');sidebar.setFixedWidth(230);s=QVBoxLayout(sidebar);s.setContentsMargins(14,21,14,15);s.setSpacing(8)
         logo=QLabel('◈  KEENETIC ROUTES');logo.setObjectName('appTitle');s.addWidget(logo)
-        sub=QLabel('ROUTE MANAGER  /  0.2.4');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
+        sub=QLabel(f'ROUTE MANAGER  /  {VERSION}');sub.setObjectName('muted');s.addWidget(sub);s.addSpacing(32)
         self.nav=[]
-        for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
+        for i,(sym,name) in enumerate([('▦','Обзор'),('☷','Маршруты'),('◉','Сайты'),('⇄','DNS-маршруты'),('⇅','Импорт / экспорт'),('⚙','Диагностика')]):
             b=QPushButton(f' {sym}   {name}');b.setObjectName('nav');b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _,n=i:self._show_page(n));s.addWidget(b);self.nav.append(b)
         s.addStretch()
@@ -356,7 +357,7 @@ class MainWindow(QMainWindow):
         self.read_button=QPushButton('↻  Обновить маршруты');self.read_button.setObjectName('primary');self.read_button.clicked.connect(self.refresh);h.addWidget(self.read_button)
         m.addWidget(top)
         self.stack=QStackedWidget();m.addWidget(self.stack,1)
-        self._build_dashboard();self._build_routes();self._build_sites();self._build_exports();self._build_diagnostics()
+        self._build_dashboard();self._build_routes();self._build_sites();self.stack.addWidget(DnsRoutingPage(self));self._build_exports();self._build_diagnostics()
         footer=QFrame();footer.setObjectName('topbar');fl=QHBoxLayout(footer);fl.setContentsMargins(19,7,19,7)
         self.status=QLabel('Готово. Подключись к Keenetic и прочитай маршруты.');self.status.setObjectName('muted');fl.addWidget(self.status,1)
         self.busybar=QProgressBar();self.busybar.setFixedWidth(120);self.busybar.setVisible(False);fl.addWidget(self.busybar)
@@ -379,7 +380,7 @@ class MainWindow(QMainWindow):
         d=QLabel('Маршруты и домены — в одном месте. Данные роутера читаются по Telnet, а подписи сайтов хранятся только на этом ПК.');d.setObjectName('muted');d.setWordWrap(True);ins.addWidget(d)
         ins.addSpacing(18)
         actions=QHBoxLayout()
-        for label,callback in [('☷  Таблица маршрутов',lambda:self._show_page(1)),('◉  Найти сайт',self.find_site),('⇅  Экспорт',lambda:self._show_page(3))]:
+        for label,callback in [('☷  Таблица маршрутов',lambda:self._show_page(1)),('◉  Найти сайт',self.find_site),('⇅  Экспорт',lambda:self._show_page(4))]:
             b=QPushButton(label);b.clicked.connect(callback);actions.addWidget(b)
         actions.addStretch();ins.addLayout(actions);lay.addWidget(inf)
         small=QLabel('Безопасность: перед записью создаётся резервная копия списка маршрутов; команды отправляются только после подтверждения.');small.setObjectName('muted');small.setWordWrap(True);lay.addWidget(small)
@@ -459,7 +460,7 @@ class MainWindow(QMainWindow):
     def _update_log_view(self, force=False):
         if not hasattr(self, 'log_view'):
             return
-        if not force and self.stack.currentIndex()!=4:
+        if not force and self.stack.currentIndex()!=5:
             return
         text=self.journal.render(count=100)
         if self.log_view.toPlainText()!=text:
@@ -489,7 +490,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(n)
         if hasattr(self,'journal') and hasattr(self,'nav') and 0 <= n < len(self.nav):
             self.journal.record('navigation', 'Открыт раздел ' + self.nav[n].text().strip())
-        if n==4:self._update_log_view(force=True)
+        if n==5:self._update_log_view(force=True)
         for i,b in enumerate(self.nav): b.setProperty('active','true' if i==n else 'false');b.style().unpolish(b);b.style().polish(b)
     def _credentials(self): return (self.ip.text().strip(),self.port.value(),self.user.text().strip(),self.password.text())
     def _run(self,task,callback,label):
