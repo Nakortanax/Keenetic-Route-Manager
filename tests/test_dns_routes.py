@@ -1,9 +1,12 @@
 """Offline tests for DNS-based routing; no router or network needed."""
+import tempfile
 import unittest
+from unittest.mock import patch
+from pathlib import Path
 
 from keenetic_manager.dns_routes import (
     GLOBAL, DnsGroup, DnsRule, DnsSnapshot, parse_dns_config,
-    parse_entries, plan_group, plan_rule,
+    parse_entries, plan_group, plan_rule, DnsClient,
 )
 
 
@@ -123,6 +126,70 @@ class PlanTests(unittest.TestCase):
             plan_rule(self.old, "DNS_WG2_INSTAGRAM", "Policy99", "Wireguard2")
         with self.assertRaises(ValueError):
             plan_rule(self.old, "DNS_WG2_INSTAGRAM", "Policy1", "Wireguard2; exit")
+
+
+class ApplySafetyTests(unittest.TestCase):
+    class Session:
+        def __init__(self, fail=None):
+            self.calls = []
+            self.fail = fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def command(self, text, **_):
+            self.calls.append(text)
+            if text == self.fail:
+                raise RuntimeError("synthetic router error")
+            return "OK"
+
+    def setUp(self):
+        self.old = parse_dns_config(CONFIG)
+        self.plan = plan_rule(self.old, "domain-list0", "Policy0", "Wireguard2")
+        self.client = DnsClient.__new__(DnsClient)
+        self.client.journal = None
+
+    def test_apply_verifies_then_saves_and_backs_up(self):
+        s = self.Session()
+        with tempfile.TemporaryDirectory() as home, \
+                patch.dict("os.environ", {"LOCALAPPDATA": home}), \
+                patch.object(DnsClient, "_session", return_value=s), \
+                patch.object(DnsClient, "_read_dns", side_effect=[
+                    (self.old, {"Wireguard2": "VPN"}),
+                    (self.plan.expected, {"Wireguard2": "VPN"}),
+                ]):
+            result = self.client.apply_dns(self.old, self.plan)
+            self.assertEqual(result[0], self.plan.expected)
+            self.assertTrue(Path(result[2]).exists())
+        self.assertEqual(s.calls[0], self.plan.ops[0].commands[0])
+        self.assertEqual(s.calls[-1], "system configuration save")
+
+    def test_changed_dns_snapshot_blocks_all_commands(self):
+        s = self.Session()
+        changed = plan_group(self.old, "DNS_NEW", "example.com").expected
+        with patch.object(DnsClient, "_session", return_value=s), \
+             patch.object(DnsClient, "_read_dns", return_value=(changed, {"Wireguard2": "VPN"})):
+            with self.assertRaisesRegex(RuntimeError, "изменились"):
+                self.client.apply_dns(self.old, self.plan)
+        self.assertEqual(s.calls, [])
+
+    def test_router_failure_attempts_rollback_without_save(self):
+        command = self.plan.ops[0].commands[0]
+        s = self.Session(fail=command)
+        with tempfile.TemporaryDirectory() as home, \
+                patch.dict("os.environ", {"LOCALAPPDATA": home}), \
+                patch.object(DnsClient, "_session", return_value=s), \
+                patch.object(DnsClient, "_read_dns", side_effect=[
+                    (self.old, {"Wireguard2": "VPN"}),
+                    (self.old, {"Wireguard2": "VPN"}),
+                ]):
+            with self.assertRaisesRegex(RuntimeError, "не сохранено"):
+                self.client.apply_dns(self.old, self.plan)
+        self.assertNotIn("system configuration save", s.calls)
+        self.assertIn(self.plan.ops[0].inverse[0], s.calls)
 
 
 if __name__ == "__main__":
