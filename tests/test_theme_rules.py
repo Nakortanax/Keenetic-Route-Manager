@@ -20,7 +20,7 @@ class ThemeRules(unittest.TestCase):
         self.assertIn("QWidget#appRoot", STYLE)
 
     def test_all_pages_and_root_have_named_surfaces(self):
-        self.assertEqual(TEXT.count("page.setObjectName('pageSurface')"), 5)
+        self.assertEqual(TEXT.count("page.setObjectName('pageSurface')"), 6)
         self.assertIn("root.setObjectName('appRoot')", TEXT)
         self.assertIn("main.setObjectName('contentRoot')", TEXT)
         self.assertEqual(TEXT.count("QDialog { background:#172638; }"), 1)
